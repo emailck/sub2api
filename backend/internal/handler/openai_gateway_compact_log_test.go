@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -106,6 +107,32 @@ func TestIsOpenAIRemoteCompactPath(t *testing.T) {
 
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	require.False(t, isOpenAIRemoteCompactPath(c))
+}
+
+func TestOpenAIResponsesRequiredCapability(t *testing.T) {
+	require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(nil))
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	for _, path := range []string{
+		"/v1/responses/input_tokens",
+		"/responses/input_tokens/",
+		"/backend-api/codex/responses/input_tokens",
+	} {
+		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+		require.Equal(t, service.OpenAIEndpointCapabilityInputTokens, openAIResponsesRequiredCapability(c), path)
+	}
+
+	for _, path := range []string{
+		"/v1/responses",
+		"/v1/responses/compact",
+		"/v1/responses/input_tokens/extra",
+	} {
+		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+		require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(c), path)
+	}
 }
 
 func TestLogOpenAIRemoteCompactOutcome_Succeeded(t *testing.T) {

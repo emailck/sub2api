@@ -85,6 +85,7 @@ type OpenAIEndpointCapability string
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityInputTokens     OpenAIEndpointCapability = "input_tokens"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1364,6 +1365,11 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
+	case OpenAIEndpointCapabilityInputTokens:
+		// The public Responses input_tokens endpoint requires Platform API
+		// credentials. ChatGPT subscription OAuth tokens do not carry the
+		// api.responses.write scope and must never be scheduled for it.
+		return a.Type == AccountTypeAPIKey
 	default:
 		return false
 	}
