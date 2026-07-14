@@ -475,7 +475,7 @@ func TestAccountSupportsOpenAIImageCapability_EmptyRequirementDoesNotRejectGrok(
 }
 
 func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
-	t.Run("OpenAI APIKey 默认兼容 chat、embeddings 和 alpha search", func(t *testing.T) {
+	t.Run("OpenAI APIKey 默认兼容 chat、embeddings、alpha search 和 input_tokens", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
@@ -484,6 +484,7 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityInputTokens))
 	})
 
 	t.Run("OpenAI OAuth 默认仅兼容 chat", func(t *testing.T) {
@@ -495,6 +496,7 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
 		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
+		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityInputTokens))
 	})
 
 	t.Run("alpha search 允许 OpenAI OAuth/PAT 与 APIKey 账号，拒绝 Grok", func(t *testing.T) {
@@ -544,6 +546,7 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		// chat 能力隐含放行 alpha search（OAuth/APIKey 语义一致）。
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
 		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityInputTokens))
 	})
 
 	t.Run("OAuth 显式列表沿用 chat 能力放行 alpha search", func(t *testing.T) {
