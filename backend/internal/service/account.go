@@ -94,6 +94,7 @@ const (
 	// entitlement probe was forbidden. Video status lookups intentionally do not
 	// require this capability so already-submitted requests remain queryable.
 	OpenAIEndpointCapabilityGrokMediaGeneration OpenAIEndpointCapability = "grok_media_generation"
+	OpenAIEndpointCapabilityInputTokens         OpenAIEndpointCapability = "input_tokens"
 	// OpenAIEndpointCapabilityResponses 表示上游确实提供 /v1/responses 端点。
 	// 与其他能力不同：支持状态来自 accounts.extra 的自动探测标记
 	// （openai_responses_supported / openai_responses_mode），而非
@@ -1458,6 +1459,11 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
+	case OpenAIEndpointCapabilityInputTokens:
+		// The public Responses input_tokens endpoint requires Platform API
+		// credentials. ChatGPT subscription OAuth tokens do not carry the
+		// api.responses.write scope and must never be scheduled for it.
+		return a.Type == AccountTypeAPIKey
 	default:
 		return false
 	}
