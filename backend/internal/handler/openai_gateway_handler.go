@@ -332,6 +332,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	requiredCapability := openAIResponsesRequiredCapability(c)
 
 	for {
 		// Select account supporting the requested model
@@ -344,7 +345,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
-			service.OpenAIEndpointCapabilityChatCompletions,
+			requiredCapability,
 			requireCompact,
 			false,
 			requestPlatform,
@@ -568,6 +569,21 @@ func isOpenAIRemoteCompactPath(c *gin.Context) bool {
 	}
 	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
 	return strings.HasSuffix(normalizedPath, "/responses/compact")
+}
+
+func isOpenAIInputTokensPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	return strings.HasSuffix(normalizedPath, "/responses/input_tokens")
+}
+
+func openAIResponsesRequiredCapability(c *gin.Context) service.OpenAIEndpointCapability {
+	if isOpenAIInputTokensPath(c) {
+		return service.OpenAIEndpointCapabilityInputTokens
+	}
+	return service.OpenAIEndpointCapabilityChatCompletions
 }
 
 // isBareOpenAIResponsesPath 仅匹配裸 /responses 端点（无 /compact 等子路径），
