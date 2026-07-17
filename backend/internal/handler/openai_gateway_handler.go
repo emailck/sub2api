@@ -494,6 +494,50 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			var firstTokenTimeoutErr *service.OpenAIFirstTokenTimeoutError
+			if errors.As(err, &firstTokenTimeoutErr) {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+				timeoutResult := &service.OpenAIForwardResult{
+					Model:     reqModel,
+					Stream:    reqStream,
+					Duration:  time.Since(forwardStart),
+					ErrorCode: "first_token_timeout",
+				}
+				userAgent := c.GetHeader("User-Agent")
+				clientIP := ip.GetClientIP(c)
+				inboundEndpoint := GetInboundEndpoint(c)
+				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, timeoutResult)
+				requestPayloadHash := service.HashUsageRequestPayload(body)
+				quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+				h.submitOpenAIUsageRecordTask(c.Request.Context(), timeoutResult, func(ctx context.Context) {
+					if recordErr := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+						Result:             timeoutResult,
+						APIKey:             apiKey,
+						User:               apiKey.User,
+						Account:            account,
+						Subscription:       subscription,
+						InboundEndpoint:    inboundEndpoint,
+						UpstreamEndpoint:   upstreamEndpoint,
+						UserAgent:          userAgent,
+						IPAddress:          clientIP,
+						RequestPayloadHash: requestPayloadHash,
+						APIKeyService:      h.apiKeyService,
+						QuotaPlatform:      quotaPlatform,
+						ChannelUsageFields: channelMapping.ToUsageFields(reqModel, ""),
+					}); recordErr != nil {
+						reqLog.Error("openai.first_token_timeout_usage_record_failed", zap.Error(recordErr))
+					}
+				})
+
+				c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
+					"error": gin.H{
+						"type":    "upstream_timeout",
+						"code":    "first_token_timeout",
+						"message": "Upstream did not produce an initial response before the deadline",
+					},
+				})
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),

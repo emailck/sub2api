@@ -38,14 +38,23 @@ type openaiNonStreamingResult struct {
 	imageOutputSizes []string
 }
 
-func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
-	return s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, mappedModel, "")
+func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, firstTokenDeadline ...*openAIFirstTokenDeadline) (*openaiStreamingResult, error) {
+	return s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, mappedModel, "", firstTokenDeadline...)
 }
 
-func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
+func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string, firstTokenDeadline ...*openAIFirstTokenDeadline) (*openaiStreamingResult, error) {
+	var firstDeadline *openAIFirstTokenDeadline
+	if len(firstTokenDeadline) > 0 {
+		firstDeadline = firstTokenDeadline[0]
+	}
 	firstOutputTimeout := time.Duration(0)
 	if account != nil && account.Platform == PlatformOpenAI {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
+	}
+	// The no-failover first-event deadline takes precedence over the upstream
+	// semantic-output failover guard when both settings are configured.
+	if firstDeadline != nil {
+		firstOutputTimeout = 0
 	}
 	guardFirstOutput := firstOutputTimeout > 0
 	var attemptResponseHeaders http.Header
@@ -55,20 +64,36 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		} else if requestID := strings.TrimSpace(resp.Header.Get("x-request-id")); requestID != "" {
 			attemptResponseHeaders = http.Header{"X-Request-Id": []string{requestID}}
 		}
-	} else if s.responseHeaderFilter != nil {
+	} else if firstDeadline == nil && s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 
-	// Set SSE response headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	// Pass through other headers
-	if !guardFirstOutput && resp.Header.Get("x-request-id") != "" {
+	if firstDeadline == nil {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+	}
+	if !guardFirstOutput && firstDeadline == nil && resp.Header.Get("x-request-id") != "" {
 		v := resp.Header.Get("x-request-id")
 		c.Header("x-request-id", v)
+	}
+	headersCommitted := firstDeadline == nil
+	commitHeaders := func() {
+		if headersCommitted {
+			return
+		}
+		headersCommitted = true
+		if s.responseHeaderFilter != nil {
+			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		}
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		if v := resp.Header.Get("x-request-id"); v != "" {
+			c.Header("x-request-id", v)
+		}
 	}
 	applyAttemptResponseHeaders := func() {
 		if !guardFirstOutput || len(attemptResponseHeaders) == 0 || c.Writer.Written() {
@@ -267,6 +292,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			return
 		}
 		errorEventSent = true
+		commitHeaders()
 		payload := `{"type":"error","sequence_number":0,"error":{"type":"upstream_error","message":` + strconv.Quote(reason) + `,"code":` + strconv.Quote(reason) + `}}`
 		if err := flushBuffered(); err != nil {
 			clientDisconnected = true
@@ -396,6 +422,18 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
+			firstValidEvent := false
+			if firstDeadline != nil && firstDeadline.active.Load() {
+				if !gjson.ValidBytes(dataBytes) {
+					return
+				}
+				if !firstDeadline.markFirstEvent() {
+					_ = resp.Body.Close()
+					streamEarlyErr = firstDeadline.timeoutError(ctx, account, originalModel, true)
+					return
+				}
+				firstValidEvent = true
+			}
 			eventTypeRaw := gjson.GetBytes(dataBytes, "type").String()
 			eventType := strings.TrimSpace(eventTypeRaw)
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
@@ -502,6 +540,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(sanitizedData)
 				line = "data: " + data
 			}
+			commitHeaders()
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(line, mappedModel) {
@@ -514,7 +553,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
-				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
+				shouldFlush := firstValidEvent || (queueDrained && (clientOutputStarted || startsClientOutput))
 				if firstTokenMs == nil && startsClientOutput {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
@@ -558,6 +597,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			shouldFlush = eventShouldFlush || (queueDrained && clientOutputStarted)
 			eventShouldFlush = false
 		}
+		// Forward non-data lines as-is
+		if firstDeadline != nil && firstDeadline.active.Load() {
+			return
+		}
 		if !clientDisconnected {
 			if _, err := writePendingString(line); err != nil {
 				handlePendingWriteError(err)
@@ -579,7 +622,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	}
 
 	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
-	if streamInterval <= 0 && keepaliveInterval <= 0 && firstOutputTimeout <= 0 {
+	if streamInterval <= 0 && keepaliveInterval <= 0 && firstOutputTimeout <= 0 && firstDeadline == nil {
 		defer putSSEScannerBuf64K(scanBuf)
 		for documentScanner.Scan() {
 			processSSELine(documentScanner.Text(), true)
@@ -697,6 +740,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			)
 
 		case <-keepaliveCh:
+			if firstDeadline != nil && firstDeadline.active.Load() {
+				continue
+			}
 			if clientDisconnected {
 				continue
 			}
@@ -729,6 +775,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			} else {
 				lastDownstreamWriteAt = time.Now()
 			}
+
+		case <-firstDeadline.done():
+			if firstDeadline == nil || !firstDeadline.timedOut() {
+				continue
+			}
+			_ = resp.Body.Close()
+			return resultWithUsage(), firstDeadline.timeoutError(ctx, account, originalModel, true)
 		}
 	}
 
