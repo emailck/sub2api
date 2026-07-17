@@ -1304,7 +1304,43 @@ func TestOpenAIForwardFirstTokenTimeoutAfter200WithoutSSEDataIsNotFailover(t *te
 	require.Empty(t, rec.Body.String())
 }
 
-func TestOpenAIStreamingFirstValidEventDisarmsDeadlineAndStreamsNormally(t *testing.T) {
+func TestOpenAIStreamingPreambleDoesNotDisarmFirstTokenDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	upstreamCtx, deadline := newOpenAIFirstTokenDeadline(context.Background(), 50*time.Millisecond)
+	defer deadline.close()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+		Request:    httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil).WithContext(upstreamCtx),
+	}
+	go func() {
+		_, _ = pw.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			"",
+			`data: {"type":"response.in_progress","response":{"id":"resp_1"}}`,
+			"",
+		}, "\n")))
+	}()
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5", "gpt-5", deadline)
+	require.Error(t, err)
+	var timeoutErr *OpenAIFirstTokenTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	require.NotNil(t, result)
+	require.Nil(t, result.firstTokenMs)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingFirstOutputEventDisarmsDeadlineAndStreamsNormally(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
 	rec := httptest.NewRecorder()
@@ -1330,6 +1366,8 @@ func TestOpenAIStreamingFirstValidEventDisarmsDeadlineAndStreamsNormally(t *test
 	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5", "gpt-5", deadline)
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.NotNil(t, result.firstTokenMs)
+	require.False(t, deadline.active.Load())
 	require.True(t, c.Writer.Written())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
