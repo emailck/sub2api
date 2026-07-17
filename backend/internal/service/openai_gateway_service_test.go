@@ -1281,6 +1281,131 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamingFirstTokenTimeoutAfterHeadersDoesNotCommitResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	upstreamCtx, deadline := newOpenAIFirstTokenDeadline(context.Background(), 30*time.Millisecond)
+	defer deadline.close()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+		Request:    httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil).WithContext(upstreamCtx),
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5", "gpt-5", deadline)
+	require.Error(t, err)
+	var timeoutErr *OpenAIFirstTokenTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.True(t, timeoutErr.ResponseHeadersReceived)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIForwardFirstTokenTimeoutBeforeResponseHeadersIsNotFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{doHook: func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{OpenAIFirstTokenTimeout: 1, MaxLineSize: defaultMaxLineSize}},
+		httpUpstream: upstream,
+	}
+	account := openAIFailoverCachedBodyTestAccount(1, "timeout-account", nil)
+
+	started := time.Now()
+	_, err := svc.Forward(context.Background(), c, account, body)
+	require.Error(t, err)
+	var timeoutErr *OpenAIFirstTokenTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.False(t, timeoutErr.ResponseHeadersReceived)
+	require.Less(t, time.Since(started), 2*time.Second)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIForwardFirstTokenTimeoutAfter200WithoutSSEDataIsNotFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       pr,
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{OpenAIFirstTokenTimeout: 1, MaxLineSize: defaultMaxLineSize}},
+		httpUpstream: upstream,
+	}
+	account := openAIFailoverCachedBodyTestAccount(1, "timeout-account", nil)
+
+	_, err := svc.Forward(context.Background(), c, account, body)
+	require.Error(t, err)
+	var timeoutErr *OpenAIFirstTokenTimeoutError
+	require.ErrorAs(t, err, &timeoutErr)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	require.True(t, timeoutErr.ResponseHeadersReceived)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingFirstValidEventDisarmsDeadlineAndStreamsNormally(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	_, deadline := newOpenAIFirstTokenDeadline(context.Background(), time.Second)
+	defer deadline.close()
+	body := strings.Join([]string{
+		": keepalive",
+		"",
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5", "gpt-5", deadline)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, c.Writer.Written())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
+	require.NotContains(t, rec.Body.String(), ": keepalive")
+}
+
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

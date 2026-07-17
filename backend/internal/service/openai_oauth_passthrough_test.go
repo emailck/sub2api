@@ -35,6 +35,7 @@ type httpUpstreamRecorder struct {
 	resp      *http.Response
 	responses []*http.Response
 	err       error
+	doHook    func(*http.Request) (*http.Response, error)
 }
 
 type passthroughErrReadCloser struct {
@@ -73,6 +74,9 @@ func (u *httpUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID 
 		req.Body = io.NopCloser(bytes.NewReader(b))
 	}
 	u.requests = append(u.requests, req)
+	if u.doHook != nil {
+		return u.doHook(req)
+	}
 	if u.err != nil {
 		return nil, u.err
 	}
