@@ -422,18 +422,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
-			firstValidEvent := false
-			if firstDeadline != nil && firstDeadline.active.Load() {
-				if !gjson.ValidBytes(dataBytes) {
-					return
-				}
-				if !firstDeadline.markFirstEvent() {
-					_ = resp.Body.Close()
-					streamEarlyErr = firstDeadline.timeoutError(ctx, account, originalModel, true)
-					return
-				}
-				firstValidEvent = true
-			}
 			eventTypeRaw := gjson.GetBytes(dataBytes, "type").String()
 			eventType := strings.TrimSpace(eventTypeRaw)
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
@@ -540,20 +528,31 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(sanitizedData)
 				line = "data: " + data
 			}
-			commitHeaders()
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(line, mappedModel) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			firstOutputEvent := false
+			if firstDeadline != nil && firstDeadline.active.Load() && startsClientOutput {
+				if !firstDeadline.markFirstEvent() {
+					_ = resp.Body.Close()
+					streamEarlyErr = firstDeadline.timeoutError(ctx, account, originalModel, true)
+					return
+				}
+				firstOutputEvent = true
+			}
+			if firstDeadline == nil || startsClientOutput {
+				commitHeaders()
+			}
 			if guardFirstOutput {
 				eventStartsClientOutput = eventStartsClientOutput || startsClientOutput
 			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
-				shouldFlush := firstValidEvent || (queueDrained && (clientOutputStarted || startsClientOutput))
+				shouldFlush := firstOutputEvent || (queueDrained && (clientOutputStarted || startsClientOutput))
 				if firstTokenMs == nil && startsClientOutput {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
@@ -597,8 +596,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			shouldFlush = eventShouldFlush || (queueDrained && clientOutputStarted)
 			eventShouldFlush = false
 		}
-		// Forward non-data lines as-is
-		if firstDeadline != nil && firstDeadline.active.Load() {
+		// Keep pre-output SSE frame boundaries buffered, but do not retain
+		// keepalive comments that arrived before the first semantic output.
+		if firstDeadline != nil && firstDeadline.active.Load() && strings.HasPrefix(line, ":") {
 			return
 		}
 		if !clientDisconnected {
