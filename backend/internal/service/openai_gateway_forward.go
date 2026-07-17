@@ -8,14 +8,104 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
+
+type openAIFirstTokenDeadline struct {
+	timeout     time.Duration
+	startedAt   time.Time
+	deadlineCtx context.Context
+	cancelTimer context.CancelFunc
+	cancelReq   context.CancelFunc
+	stop        func() bool
+	active      atomic.Bool
+	logOnce     sync.Once
+}
+
+func newOpenAIFirstTokenDeadline(parent context.Context, timeout time.Duration) (context.Context, *openAIFirstTokenDeadline) {
+	base := context.WithoutCancel(parent)
+	upstreamCtx, cancelUpstream := context.WithCancel(base)
+	deadlineCtx, cancelDeadline := context.WithTimeout(base, timeout)
+	guard := &openAIFirstTokenDeadline{
+		timeout:     timeout,
+		startedAt:   time.Now(),
+		deadlineCtx: deadlineCtx,
+		cancelTimer: cancelDeadline,
+		cancelReq:   cancelUpstream,
+	}
+	guard.stop = context.AfterFunc(deadlineCtx, cancelUpstream)
+	guard.active.Store(true)
+	return upstreamCtx, guard
+}
+
+// markFirstEvent disarms the deadline without canceling the upstream body.
+func (d *openAIFirstTokenDeadline) markFirstEvent() bool {
+	if d == nil {
+		return true
+	}
+	if d.deadlineCtx.Err() != nil || !d.stop() {
+		return false
+	}
+	// The AfterFunc was stopped above, so canceling the timer context does not
+	// cancel the upstream request body.
+	d.cancelTimer()
+	d.active.Store(false)
+	return true
+}
+
+func (d *openAIFirstTokenDeadline) done() <-chan struct{} {
+	if d == nil || !d.active.Load() {
+		return nil
+	}
+	return d.deadlineCtx.Done()
+}
+
+func (d *openAIFirstTokenDeadline) timedOut() bool {
+	return d != nil && errors.Is(d.deadlineCtx.Err(), context.DeadlineExceeded)
+}
+
+func (d *openAIFirstTokenDeadline) close() {
+	if d == nil {
+		return
+	}
+	_ = d.stop()
+	d.active.Store(false)
+	d.cancelTimer()
+	d.cancelReq()
+}
+
+func (d *openAIFirstTokenDeadline) timeoutError(ctx context.Context, account *Account, model string, responseHeadersReceived bool) error {
+	elapsed := time.Since(d.startedAt)
+	d.logOnce.Do(func() {
+		requestID, _ := ctx.Value(ctxkey.RequestID).(string)
+		clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string)
+		logger.FromContext(ctx).With(
+			zap.String("component", "service.openai_gateway"),
+			zap.String("request_id", strings.TrimSpace(requestID)),
+			zap.String("client_request_id", strings.TrimSpace(clientRequestID)),
+			zap.Int64("account_id", account.ID),
+			zap.String("model", model),
+			zap.Int64("timeout_ms", d.timeout.Milliseconds()),
+			zap.Int64("elapsed_ms", elapsed.Milliseconds()),
+			zap.Bool("response_headers_received", responseHeadersReceived),
+		).Warn("openai.first_token_timeout")
+	})
+	return &OpenAIFirstTokenTimeoutError{
+		Timeout:                 d.timeout,
+		Elapsed:                 elapsed,
+		ResponseHeadersReceived: responseHeadersReceived,
+	}
+}
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
@@ -760,18 +850,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 		var headerGuard *openAIFirstOutputHeaderGuard
-		if firstOutputTimeout > 0 {
+		var firstTokenDeadline *openAIFirstTokenDeadline
+		if reqStream && s.cfg != nil && s.cfg.Gateway.OpenAIFirstTokenTimeout > 0 {
+			releaseUpstreamCtx()
+			upstreamCtx, firstTokenDeadline = newOpenAIFirstTokenDeadline(
+				ctx,
+				time.Duration(s.cfg.Gateway.OpenAIFirstTokenTimeout)*time.Second,
+			)
+			releaseUpstreamCtx = firstTokenDeadline.close
+		} else if firstOutputTimeout > 0 {
 			upstreamCtx, headerGuard = newOpenAIFirstOutputHeaderGuard(
 				upstreamCtx, releaseUpstreamCtx, startTime.Add(firstOutputTimeout),
 			)
 		}
 		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
-		if headerGuard == nil {
+		if headerGuard == nil && firstTokenDeadline == nil {
 			releaseUpstreamCtx()
 		}
 		if err != nil {
 			if headerGuard != nil {
 				headerGuard.close()
+			}
+			if firstTokenDeadline != nil {
+				releaseUpstreamCtx()
 			}
 			return nil, err
 		}
@@ -803,6 +904,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if headerGuard != nil {
 				headerGuard.close()
 			}
+			if firstTokenDeadline != nil && firstTokenDeadline.timedOut() {
+				timeoutErr := firstTokenDeadline.timeoutError(ctx, account, originalModel, false)
+				releaseUpstreamCtx()
+				return nil, timeoutErr
+			}
+			if firstTokenDeadline != nil {
+				releaseUpstreamCtx()
+			}
 			// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 			// a failover so the handler switches to a healthy account, and temporarily
 			// unschedule the account on durable faults (e.g. rejected proxy credentials).
@@ -811,11 +920,26 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if headerGuard != nil {
 			resp.Body = &openAIRequestContextReadCloser{ReadCloser: resp.Body, cleanup: headerGuard.close}
 		}
+		if firstTokenDeadline != nil && firstTokenDeadline.timedOut() {
+			_ = resp.Body.Close()
+			timeoutErr := firstTokenDeadline.timeoutError(ctx, account, originalModel, true)
+			releaseUpstreamCtx()
+			return nil, timeoutErr
+		}
 
 		// Handle error response
 		if resp.StatusCode >= 400 {
+			if firstTokenDeadline != nil {
+				if !firstTokenDeadline.markFirstEvent() {
+					_ = resp.Body.Close()
+					timeoutErr := firstTokenDeadline.timeoutError(ctx, account, originalModel, true)
+					releaseUpstreamCtx()
+					return nil, timeoutErr
+				}
+			}
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
+			releaseUpstreamCtx()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
@@ -888,7 +1012,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
 		}
-		defer func() { _ = resp.Body.Close() }()
+		defer func() {
+			_ = resp.Body.Close()
+			releaseUpstreamCtx()
+		}()
 
 		serviceTier := extractOpenAIServiceTierFromBody(body)
 		// 上游接受后只保留计费需要的标量，避免响应处理期间继续保活完整 input/tools map。
@@ -901,7 +1028,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageCount := 0
 		var imageOutputSizes []string
 		if reqStream {
-			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue, firstTokenDeadline)
 			if err != nil {
 				return nil, err
 			}

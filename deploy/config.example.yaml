@@ -164,6 +164,9 @@ gateway:
   openai_first_output_timeout_seconds: 0
   # Optional high/xhigh/max override (seconds, 0=use the standard timeout)
   openai_high_effort_first_output_timeout_seconds: 0
+  # OpenAI /v1/responses timeout from request start to the first valid SSE data JSON event (seconds, 0=disabled)
+  # OpenAI /v1/responses 从请求发出到首个有效 SSE data JSON 事件的超时（秒，0=禁用）
+  openai_first_token_timeout: 60
   # Max request body size in bytes (default: 256MB)
   # 请求体最大字节数（默认 256MB）
   max_body_size: 268435456

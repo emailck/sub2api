@@ -607,6 +607,18 @@ type UpstreamFailoverError struct {
 	ClientMessage            string
 }
 
+// OpenAIFirstTokenTimeoutError indicates that a Responses request must return
+// immediately instead of entering account failover.
+type OpenAIFirstTokenTimeoutError struct {
+	Timeout                 time.Duration
+	Elapsed                 time.Duration
+	ResponseHeadersReceived bool
+}
+
+func (e *OpenAIFirstTokenTimeoutError) Error() string {
+	return "upstream first token timeout"
+}
+
 func (e *UpstreamFailoverError) Error() string {
 	if e != nil && e.Stage == GatewayFailureStageAccountAuth {
 		return fmt.Sprintf("credential failure: %s (failover)", e.Reason)

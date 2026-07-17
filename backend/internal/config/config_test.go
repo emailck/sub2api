@@ -1407,6 +1407,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.openai_high_effort_first_output_timeout_seconds",
 		},
 		{
+			name:    "gateway openai first token timeout",
+			mutate:  func(c *Config) { c.Gateway.OpenAIFirstTokenTimeout = -1 },
+			wantErr: "gateway.openai_first_token_timeout",
+		},
+		{
 			name:    "gateway max idle conns",
 			mutate:  func(c *Config) { c.Gateway.MaxIdleConns = 0 },
 			wantErr: "gateway.max_idle_conns",
