@@ -174,10 +174,7 @@ func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey
 	return service.PlatformOpenAI
 }
 
-func openAIResponsesRequiredCapability(c *gin.Context, imageIntent bool, platform string) service.OpenAIEndpointCapability {
-	if isOpenAIInputTokensPath(c) {
-		return service.OpenAIEndpointCapabilityInputTokens
-	}
+func openAIResponsesRequiredCapability(imageIntent bool, platform string) service.OpenAIEndpointCapability {
 	if imageIntent && platform == service.PlatformOpenAI {
 		return service.OpenAIEndpointCapabilityResponses
 	}
@@ -440,7 +437,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
-	requiredCapability := openAIResponsesRequiredCapability(c, imageIntent, requestPlatform)
+	requiredCapability := openAIResponsesPathRequiredCapability(c)
+	if requiredCapability == service.OpenAIEndpointCapabilityChatCompletions {
+		requiredCapability = openAIResponsesRequiredCapability(imageIntent, requestPlatform)
+	}
 
 	for {
 		// Streaming Forward intentionally detaches the upstream request so usage can
@@ -777,6 +777,13 @@ func isOpenAIInputTokensPath(c *gin.Context) bool {
 	}
 	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
 	return strings.HasSuffix(normalizedPath, "/responses/input_tokens")
+}
+
+func openAIResponsesPathRequiredCapability(c *gin.Context) service.OpenAIEndpointCapability {
+	if isOpenAIInputTokensPath(c) {
+		return service.OpenAIEndpointCapabilityInputTokens
+	}
+	return service.OpenAIEndpointCapabilityChatCompletions
 }
 
 // isBareOpenAIResponsesPath 仅匹配裸 /responses 端点（无 /compact 等子路径），

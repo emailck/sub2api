@@ -123,8 +123,8 @@ func TestIsOpenAIRemoteCompactPath(t *testing.T) {
 	require.False(t, isOpenAIRemoteCompactPath(c))
 }
 
-func TestOpenAIResponsesRequiredCapability(t *testing.T) {
-	require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(nil))
+func TestOpenAIResponsesPathRequiredCapability(t *testing.T) {
+	require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesPathRequiredCapability(nil))
 
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
 		"/backend-api/codex/responses/input_tokens",
 	} {
 		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
-		require.Equal(t, service.OpenAIEndpointCapabilityInputTokens, openAIResponsesRequiredCapability(c), path)
+		require.Equal(t, service.OpenAIEndpointCapabilityInputTokens, openAIResponsesPathRequiredCapability(c), path)
 	}
 
 	for _, path := range []string{
@@ -145,7 +145,7 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
 		"/v1/responses/input_tokens/extra",
 	} {
 		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
-		require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(c), path)
+		require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesPathRequiredCapability(c), path)
 	}
 }
 
