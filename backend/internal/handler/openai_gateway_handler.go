@@ -597,7 +597,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					"error": gin.H{
 						"type":    "upstream_timeout",
 						"code":    "first_token_timeout",
-							"message": "Upstream did not produce semantic output before the deadline",
+						"message": "Upstream did not produce semantic output before the deadline",
 					},
 				})
 				return
