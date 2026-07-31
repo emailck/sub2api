@@ -1320,7 +1320,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			billingTier,
 			billingMode,
 			log.AccountStatsCost,      // account_stats_cost
-			sessionID,                // session_id
+			sessionID,                 // session_id
 			nullString(log.ErrorCode), // error_code
 			createdAt,
 		},
