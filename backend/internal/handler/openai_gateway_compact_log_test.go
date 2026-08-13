@@ -67,6 +67,20 @@ func (s *handlerInMemoryLogSink) ContainsFieldValue(field, substr string) bool {
 	return false
 }
 
+func (s *handlerInMemoryLogSink) FieldValueForMessage(message, field string) (any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range s.events {
+		if event == nil || event.Message != message || event.Fields == nil {
+			continue
+		}
+		if value, ok := event.Fields[field]; ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
 func captureHandlerStructuredLog(t *testing.T) (*handlerInMemoryLogSink, func()) {
 	t.Helper()
 	handlerStructuredLogCaptureMu.Lock()
@@ -109,8 +123,8 @@ func TestIsOpenAIRemoteCompactPath(t *testing.T) {
 	require.False(t, isOpenAIRemoteCompactPath(c))
 }
 
-func TestOpenAIResponsesRequiredCapability(t *testing.T) {
-	require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(nil))
+func TestOpenAIResponsesRequiredCapability_InputTokensPath(t *testing.T) {
+	require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(nil, false, service.PlatformOpenAI))
 
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -122,7 +136,7 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
 		"/backend-api/codex/responses/input_tokens",
 	} {
 		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
-		require.Equal(t, service.OpenAIEndpointCapabilityInputTokens, openAIResponsesRequiredCapability(c), path)
+		require.Equal(t, service.OpenAIEndpointCapabilityInputTokens, openAIResponsesRequiredCapability(c, false, service.PlatformOpenAI), path)
 	}
 
 	for _, path := range []string{
@@ -131,7 +145,7 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
 		"/v1/responses/input_tokens/extra",
 	} {
 		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
-		require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(c), path)
+		require.Equal(t, service.OpenAIEndpointCapabilityChatCompletions, openAIResponsesRequiredCapability(c, false, service.PlatformOpenAI), path)
 	}
 }
 

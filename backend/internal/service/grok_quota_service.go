@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"golang.org/x/sync/singleflight"
@@ -19,9 +20,11 @@ import (
 
 const (
 	grokQuotaUpstreamTimeout = 20 * time.Second
-	grokQuotaProbeInput      = "."
+	grokQuotaProbeInput      = "hi"
 	grokQuotaDefaultModel    = grokDefaultResponsesModel
 	grokBillingExtraKey      = "grok_billing_snapshot"
+	grokBillingMaxAttempts   = 2
+	grokBillingRetryDelay    = 100 * time.Millisecond
 )
 
 type GrokQuotaProbeResult struct {
@@ -47,12 +50,14 @@ type GrokQuotaResetResult struct {
 }
 
 type GrokQuotaService struct {
-	accountRepo   AccountRepository
-	proxyRepo     ProxyRepository
-	tokenProvider *GrokTokenProvider
-	httpUpstream  HTTPUpstream
-	usageLogRepo  UsageLogRepository
-	probeFlight   singleflight.Group
+	accountRepo    AccountRepository
+	proxyRepo      ProxyRepository
+	tokenProvider  *GrokTokenProvider
+	httpUpstream   HTTPUpstream
+	usageLogRepo   UsageLogRepository
+	settingService *SettingService
+	cfg            *config.Config
+	probeFlight    singleflight.Group
 }
 
 func NewGrokQuotaService(
@@ -60,6 +65,7 @@ func NewGrokQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *GrokTokenProvider,
 	httpUpstream HTTPUpstream,
+	cfg *config.Config,
 	usageLogRepos ...UsageLogRepository,
 ) *GrokQuotaService {
 	var usageLogRepo UsageLogRepository
@@ -72,6 +78,13 @@ func NewGrokQuotaService(
 		tokenProvider: tokenProvider,
 		httpUpstream:  httpUpstream,
 		usageLogRepo:  usageLogRepo,
+		cfg:           cfg,
+	}
+}
+
+func (s *GrokQuotaService) SetSettingService(settingService *SettingService) {
+	if s != nil {
+		s.settingService = settingService
 	}
 }
 
@@ -80,6 +93,9 @@ func NewGrokQuotaService(
 func (s *GrokQuotaService) QueryQuota(ctx context.Context, accountID int64) (*GrokQuotaProbeResult, error) {
 	billingResult, billingErr := s.ProbeBilling(ctx, accountID)
 	if billingErr == nil && billingResult != nil && grokBillingHasAuthoritativeQuota(billingResult.Billing) {
+		if acc, err := s.accountRepo.GetByID(ctx, accountID); err == nil {
+			s.scheduleGrokObservedModelsSync(acc)
+		}
 		return billingResult, nil
 	}
 
@@ -104,6 +120,9 @@ func (s *GrokQuotaService) QueryQuota(ctx context.Context, accountID int64) (*Gr
 		probeResult.LocalUsage7d = billingResult.LocalUsage7d
 		probeResult.LocalUsageMonthly = billingResult.LocalUsageMonthly
 		probeResult.Persisted = probeResult.Persisted || billingResult.Persisted
+	}
+	if acc, err := s.accountRepo.GetByID(ctx, accountID); err == nil {
+		s.scheduleGrokObservedModelsSync(acc)
 	}
 	return probeResult, nil
 }
@@ -135,7 +154,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build probe body: %v", err)
 	}
-	targetURL, err := xai.BuildResponsesURL(account.GetGrokBaseURL())
+	targetURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid Grok base_url: %v", err)
 	}
@@ -148,8 +167,12 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	applyGrokCLIHeaders(req.Header)
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if account.IsGrokOAuth() {
+		applyGrokCLIHeaders(req.Header)
+	}
+	// 探测请求与真实转发保持同一套账号级请求头覆写，避免探测通过但转发失败。
+	account.ApplyHeaderOverrides(req.Header)
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 1))
 	if err != nil {
@@ -158,15 +181,30 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	defer func() { _ = resp.Body.Close() }()
 
 	snapshot := xai.ObserveQuotaHeaders(resp.Header, resp.StatusCode, "active_probe")
-	resetAt, limited := grokRateLimitResetAt(snapshot, time.Now())
+	stampGrokQuotaSnapshotForPlan(account, snapshot, probeModel)
+	resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, time.Now())
 	if limited {
 		normalizeGrokExhaustedWindowResets(snapshot, resetAt, time.Now())
 	}
-	persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
-		grokQuotaSnapshotExtraKey: snapshot,
-	})
+	// A failed probe must not erase a previously observed snapshot.  401/403 and
+	// transport/server errors commonly carry no quota headers; only successful
+	// responses, or 429 responses with useful rate-limit headers, are safe to
+	// persist.  A successful 200 with no headers is still persisted as an
+	// explicit "no headers" observation so the UI can distinguish it from never
+	// probed.
+	persistErr := error(nil)
+	persisted := false
+	shouldPersist := resp.StatusCode < 400 || resp.StatusCode == http.StatusTooManyRequests
+	if shouldPersist && (snapshot.HeadersObserved || resp.StatusCode == http.StatusOK) {
+		persistErr = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+			grokQuotaSnapshotExtraKey: snapshot,
+		})
+		persisted = persistErr == nil
+	}
 	if limited {
 		persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
+	} else if isSuccessfulGrokRateLimitRecovery(account, snapshot) {
+		clearGrokRateLimitAfterRecovery(ctx, s.accountRepo, account)
 	}
 
 	result := &GrokQuotaProbeResult{
@@ -177,7 +215,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 		HeadersObserved: snapshot.HeadersObserved,
 		ResetSupported:  false,
 		FetchedAt:       time.Now().Unix(),
-		Persisted:       persistErr == nil,
+		Persisted:       persisted,
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return result, nil
@@ -211,6 +249,23 @@ func (s *GrokQuotaService) ProbeBilling(ctx context.Context, accountID int64) (*
 	})
 }
 
+// ProbeMediaEligibility refreshes billing state and evaluates the persisted
+// account snapshot used by media scheduling. Probe failures remain fail-closed;
+// deterministic persisted states such as forbidden or Free are returned as
+// normal ineligibility decisions rather than transport errors.
+func (s *GrokQuotaService) ProbeMediaEligibility(ctx context.Context, accountID int64) (bool, string, error) {
+	_, probeErr := s.ProbeBilling(ctx, accountID)
+	account, err := s.loadGrokOAuthAccount(ctx, accountID)
+	if err != nil {
+		return false, "billing_probe_failed", err
+	}
+	eligible, reason := account.GrokMediaGenerationEligibility()
+	if reason == "billing_unobserved" && probeErr != nil {
+		return false, reason, probeErr
+	}
+	return eligible, reason, nil
+}
+
 func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*GrokQuotaProbeResult, error) {
 	account, token, proxyURL, err := s.prepareProbe(ctx, accountID)
 	if err != nil {
@@ -239,12 +294,25 @@ func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*
 
 	weeklyOK := weekly.summary != nil
 	monthlyOK := monthly.summary != nil
+	previous, _ := grokBillingSnapshotFromExtra(account.Extra)
 	if !weeklyOK && !monthlyOK {
-		return nil, mergeGrokBillingProbeErrors(weekly.status, monthly.status, weekly.err, monthly.err)
+		probeErr := mergeGrokBillingProbeErrors(weekly.status, monthly.status, weekly.err, monthly.err)
+		billing := xai.MergeBillingProbeResult(previous, nil, nil, false, false)
+		if billing == nil {
+			billing = &xai.BillingSummary{Partial: true, FailedWindows: []string{"weekly", "monthly"}}
+		}
+		billing.WeeklyStatusCode = weekly.status
+		billing.MonthlyStatusCode = monthly.status
+		billing = xai.StampBillingSummary(billing, preferBillingObservationStatus(weekly.status, monthly.status), "billing_probe")
+		if persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokBillingExtraKey: billing}); persistErr != nil {
+			slog.Warn("grok_billing_failure_persist_failed", "account_id", account.ID, "error", persistErr)
+		}
+		return nil, probeErr
 	}
 	statusCode := preferSuccessfulBillingStatus(weekly.status, monthly.status, weeklyOK, monthlyOK)
-	previous, _ := grokBillingSnapshotFromExtra(account.Extra)
 	billing := xai.MergeBillingProbeResult(previous, weekly.summary, monthly.summary, weeklyOK, monthlyOK)
+	billing.WeeklyStatusCode = weekly.status
+	billing.MonthlyStatusCode = monthly.status
 	billing = xai.StampBillingSummary(billing, statusCode, "billing_probe")
 	persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
 		grokBillingExtraKey: billing,
@@ -264,6 +332,16 @@ func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*
 		FetchedAt:         now.Unix(),
 		Persisted:         persistErr == nil,
 	}, nil
+}
+
+func preferBillingObservationStatus(weeklyStatus, monthlyStatus int) int {
+	if weeklyStatus == http.StatusForbidden || monthlyStatus == http.StatusForbidden {
+		return http.StatusForbidden
+	}
+	if weeklyStatus != 0 {
+		return weeklyStatus
+	}
+	return monthlyStatus
 }
 
 func (s *GrokQuotaService) runProbeFlight(
@@ -302,31 +380,67 @@ func (s *GrokQuotaService) fetchBilling(
 	proxyURL string,
 	weekly bool,
 ) (*xai.BillingSummary, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, xai.BuildBillingURL(weekly), nil)
+	billingURL, err := buildGrokBillingURL(account, s.cfg, weekly)
 	if err != nil {
-		return nil, 0, infraerrors.Newf(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build billing request: %v", err)
+		return nil, 0, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid Grok base_url: %v", err)
 	}
-	xai.ApplyCLIBillingHeaders(req, token)
-	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 2))
-	if err != nil {
-		return nil, 0, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "billing request failed: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	for attempt := 0; attempt < grokBillingMaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, billingURL, nil)
+		if err != nil {
+			return nil, 0, infraerrors.Newf(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build billing request: %v", err)
+		}
+		xai.ApplyCLIBillingHeaders(req, token)
+		// billing 探测与真实转发保持同一套账号级请求头覆写。
+		account.ApplyHeaderOverrides(req.Header)
+		resp, requestErr := s.httpUpstream.Do(req, proxyURL, account.ID, maxInt(account.Concurrency, 2))
 
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, resp.StatusCode, nil
+		statusCode := 0
+		var bodyBytes []byte
+		if requestErr == nil {
+			statusCode = resp.StatusCode
+			bodyBytes, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			_ = resp.Body.Close()
+		}
+
+		shouldRetry := requestErr != nil || isRetryableGrokBillingStatus(statusCode)
+		if shouldRetry && attempt+1 < grokBillingMaxAttempts {
+			timer := time.NewTimer(grokBillingRetryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, statusCode, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "billing request failed: %v", ctx.Err())
+			}
+			continue
+		}
+
+		if requestErr != nil {
+			return nil, 0, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "billing request failed: %v", requestErr)
+		}
+		if statusCode == http.StatusTooManyRequests {
+			return nil, statusCode, nil
+		}
+		if statusCode >= 400 {
+			bodyText := truncate(strings.TrimSpace(string(bodyBytes)), 240)
+			slog.Warn("grok_quota_billing_failed", "account_id", account.ID, "weekly", weekly, "status", statusCode, "body", bodyText)
+			return nil, statusCode, infraerrors.Newf(mapUpstreamStatus(statusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "billing returned %d: %s", statusCode, bodyText)
+		}
+		payload, err := xai.ParseBillingPayload(bodyBytes)
+		if err != nil {
+			return nil, statusCode, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_BILLING_PARSE_ERROR", "failed to parse billing body: %v", err)
+		}
+		return xai.BuildBillingSummary(payload.Config), statusCode, nil
 	}
-	if resp.StatusCode >= 400 {
-		bodyText := truncate(strings.TrimSpace(string(bodyBytes)), 240)
-		slog.Warn("grok_quota_billing_failed", "account_id", account.ID, "weekly", weekly, "status", resp.StatusCode, "body", bodyText)
-		return nil, resp.StatusCode, infraerrors.Newf(mapUpstreamStatus(resp.StatusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "billing returned %d: %s", resp.StatusCode, bodyText)
+	return nil, 0, infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "billing request failed")
+}
+
+func isRetryableGrokBillingStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
 	}
-	payload, err := xai.ParseBillingPayload(bodyBytes)
-	if err != nil {
-		return nil, resp.StatusCode, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_BILLING_PARSE_ERROR", "failed to parse billing body: %v", err)
-	}
-	return xai.BuildBillingSummary(payload.Config), resp.StatusCode, nil
 }
 
 func mergeGrokBillingProbeErrors(weeklyStatus, monthlyStatus int, weeklyErr, monthlyErr error) error {
@@ -387,6 +501,7 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 	if err != nil {
 		return nil, "", "", err
 	}
+	proxyURL := s.resolveProxyURL(ctx, account)
 
 	token, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
@@ -396,7 +511,7 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 		return nil, "", "", infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "access token is empty")
 	}
 
-	return account, token, s.resolveProxyURL(ctx, account), nil
+	return account, token, proxyURL, nil
 }
 
 func (s *GrokQuotaService) resolveProxyURL(ctx context.Context, account *Account) string {
@@ -408,6 +523,7 @@ func (s *GrokQuotaService) resolveProxyURL(ctx context.Context, account *Account
 		return account.Proxy.URL()
 	case s != nil && s.proxyRepo != nil:
 		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
+			account.Proxy = proxy
 			return proxy.URL()
 		}
 	}
@@ -444,10 +560,9 @@ func buildGrokQuotaProbeBody(model string) ([]byte, error) {
 		model = grokQuotaDefaultModel
 	}
 	return json.Marshal(map[string]any{
-		"model":             model,
-		"input":             grokQuotaProbeInput,
-		"max_output_tokens": 1,
-		"store":             false,
+		"model":  model,
+		"input":  grokQuotaProbeInput,
+		"stream": true,
 	})
 }
 
