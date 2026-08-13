@@ -233,6 +233,7 @@ type OpenAIUsage struct {
 type OpenAIForwardResult struct {
 	RequestID  string
 	ResponseID string
+	ErrorCode  string
 	Usage      OpenAIUsage
 	Model      string // 原始模型（用于响应和日志显示）
 	// BillingModel is the model used for cost calculation.

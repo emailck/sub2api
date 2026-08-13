@@ -605,6 +605,40 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						return
 					}
 					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
+						timeoutResult := &service.OpenAIForwardResult{
+							Model:     reqModel,
+							Stream:    reqStream,
+							Duration:  time.Since(forwardStart),
+							ErrorCode: "first_output_timeout",
+						}
+						userAgent := c.GetHeader("User-Agent")
+						clientIP := ip.GetClientIP(c)
+						inboundEndpoint := GetInboundEndpoint(c)
+						upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, timeoutResult)
+						requestPayloadHash := service.HashUsageRequestPayload(body)
+						quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+						sessionID := service.ExtractClientSessionID(c)
+						h.submitOpenAIUsageRecordTask(c.Request.Context(), timeoutResult, func(ctx context.Context) {
+							if recordErr := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+								Result:             timeoutResult,
+								APIKey:             apiKey,
+								User:               apiKey.User,
+								Account:            account,
+								Subscription:       subscription,
+								InboundEndpoint:    inboundEndpoint,
+								UpstreamEndpoint:   upstreamEndpoint,
+								UserAgent:          userAgent,
+								IPAddress:          clientIP,
+								SessionID:          sessionID,
+								RequestPayloadHash: requestPayloadHash,
+								APIKeyService:      h.apiKeyService,
+								QuotaPlatform:      quotaPlatform,
+								PricingAt:          pricingAt,
+								ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, ""),
+							}); recordErr != nil {
+								reqLog.Error("openai.first_output_timeout_usage_record_failed", zap.Error(recordErr))
+							}
+						})
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

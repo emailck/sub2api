@@ -108,6 +108,8 @@ type UsageLog struct {
 	AccountID int64
 	RequestID string
 	Model     string
+	// ErrorCode identifies failed request placeholder rows. Nil means the request completed normally.
+	ErrorCode *string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.
 	// Empty should be treated as Model for backward compatibility with historical rows.
 	RequestedModel string
