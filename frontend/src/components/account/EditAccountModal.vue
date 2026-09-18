@@ -2143,7 +2143,7 @@
         </div>
       </div>
 
-      <!-- Codex 292 门票状态（仅 OpenAI OAuth） -->
+      <!-- Codex 门票状态（OpenAI OAuth / setup-token） -->
       <div
         v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token') && codexTurnTickets.length"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -2154,7 +2154,10 @@
         </p>
         <div class="mt-3 space-y-1.5">
           <div v-for="ticket in codexTurnTickets" :key="ticket.model" class="flex items-center justify-between text-sm">
-            <span class="font-medium">{{ ticket.model }}</span>
+            <span class="font-medium">
+              {{ ticket.model }}
+              <span v-if="ticket.target_length" class="text-xs font-normal text-gray-400">{{ t('admin.accounts.openai.codexTurnTicketTargetLength', { length: ticket.target_length }) }}</span>
+            </span>
             <span v-if="ticket.ready" class="text-emerald-600 dark:text-emerald-400">
               {{ t('admin.accounts.openai.codexTurnTicketReady', { time: formatCodexTicketRemaining(ticket.remaining_seconds) }) }}
             </span>

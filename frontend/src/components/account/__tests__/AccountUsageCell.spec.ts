@@ -20,7 +20,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: { length?: number }) => params?.length ? `${key}: ${params.length}` : key
     })
   }
 })
@@ -138,6 +138,27 @@ describe('AccountUsageCell', () => {
     await wrapper.setProps({ account: { ...wrapper.props('account'), codex_turn_tickets: [] } })
     expect(wrapper.text()).not.toContain('codexTurnTicket')
     expect(wrapper.text()).not.toContain('42m00s')
+    wrapper.unmount()
+  })
+
+  it.each(['team', 'business', 'self_serve_business_prolite'])('shows the server ticket target and blocking state for %s', async (plan) => {
+    getUsage.mockResolvedValue({})
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({
+        platform: 'openai', type: 'oauth', credentials: { plan_type: plan },
+        codex_turn_tickets: [{ model: 'gpt-6-astra', target_length: 332, ready: false, blocked: true, remaining_seconds: 0 }],
+      }) },
+      global: { stubs: { OpenAIQuotaResetCell: true, UsageProgressBar: true, AccountQuotaInfo: true } },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.openai.codexTurnTicketTargetLength: 332')
+    expect(wrapper.text()).toContain('admin.accounts.openai.codexTurnTicketPaused')
+    await wrapper.setProps({ account: { ...wrapper.props('account'), codex_turn_tickets: [
+      { model: 'gpt-6-astra', target_length: 340, ready: true, length: 340, blocked: false, remaining_seconds: 3000 },
+    ] } })
+    expect(wrapper.text()).toContain('admin.accounts.openai.codexTurnTicketTargetLength: 340')
+    expect(wrapper.text()).toContain('50m00s')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.codexTurnTicketPaused')
     wrapper.unmount()
   })
 
