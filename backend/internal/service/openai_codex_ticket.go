@@ -307,7 +307,7 @@ func (s *OpenAIGatewayService) storeOpenAICodexTicket(ctx context.Context, accou
 // 请求路径只注入已捕获的有效门票，不现场打票；无票则返回
 // ErrOpenAICodexTicketUnavailable。打票由后台 harvester 完成。
 func (s *OpenAIGatewayService) applyOpenAICodexTicket(ctx context.Context, account *Account, model string, h http.Header) error {
-	if s == nil || h == nil || !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabledContext(ctx) {
+	if s == nil || h == nil || !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabledContext(ctx) || !s.openAICodexTicketAccountSelected(ctx, account) {
 		return nil
 	}
 	model = normalizeOpenAICodexTicketModel(model)
@@ -359,7 +359,7 @@ func (s *OpenAIGatewayService) openAICodexTicketOutboundModel(account *Account, 
 // outboundModel 必须是真正会发给上游的模型名（openAICodexTicketOutboundModel），
 // 不是客户端原始模型：注入侧读的是出站 body.model，两侧口径必须一致。
 func (s *OpenAIGatewayService) openAICodexTicketBlocksAccount(account *Account, outboundModel string) bool {
-	if s == nil || !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabled() {
+	if s == nil || !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabled() || !s.openAICodexTicketAccountSelected(context.Background(), account) {
 		return false
 	}
 	cfg := s.openAICodexTicketConfig()
@@ -511,9 +511,10 @@ func (s *OpenAIGatewayService) refreshOpenAICodexTickets(ctx context.Context) {
 	refreshBefore := time.Duration(cfg.RefreshBeforeSeconds) * time.Second
 	var wg sync.WaitGroup
 	probed := 0
+	selectedTypes := s.openAICodexTicketAccountTypes(ctx)
 	for i := range accounts {
 		account := accounts[i]
-		if account.Status != StatusActive || !isOpenAICodexTicketAccount(&account) {
+		if account.Status != StatusActive || !OpenAICodexTicketAccountTypeSelected(&account, selectedTypes) {
 			continue
 		}
 		for _, model := range cfg.Models {
@@ -547,7 +548,7 @@ func (s *OpenAIGatewayService) refreshOpenAICodexTickets(ctx context.Context) {
 // gAAAAA 前缀）就落库；否则记 Info miss，交给下个周期重试。同一 key 并发去重，避免上一发还没
 // 回来又叠一发。
 func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, account *Account, model string) {
-	if s == nil || !isOpenAICodexTicketAccount(account) || ctx.Err() != nil || !s.openAICodexTicketEnabledContext(ctx) {
+	if s == nil || !isOpenAICodexTicketAccount(account) || ctx.Err() != nil || !s.openAICodexTicketEnabledContext(ctx) || !s.openAICodexTicketAccountSelected(ctx, account) {
 		return
 	}
 	cfg := s.openAICodexTicketConfig()

@@ -481,6 +481,15 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
 	updates[SettingKeyOpenAICodexClientVersion] = NormalizeCodexClientVersion(settings.OpenAICodexClientVersion)
 	updates[SettingKeyOpenAICodexVersionAutoSyncEnabled] = strconv.FormatBool(settings.OpenAICodexVersionAutoSyncEnabled)
+	accountTypes, err := NormalizeOpenAICodexTicketAccountTypes(settings.OpenAICodexTicketAccountTypes)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CODEX_TICKET_ACCOUNT_TYPES", err.Error())
+	}
+	accountTypesJSON, err := json.Marshal(accountTypes)
+	if err != nil {
+		return nil, err
+	}
+	updates[SettingKeyOpenAICodexTicketAccountTypes] = string(accountTypesJSON)
 	updates[SettingKeyOpenAICodexTicketEnabled] = strconv.FormatBool(settings.OpenAICodexTicketEnabled)
 	if err := ValidateOpenAICodexTicketHarvestProxyURL(settings.OpenAICodexTicketHarvestProxyURL); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_CODEX_HARVEST_PROXY", err.Error())
@@ -741,6 +750,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	// 这里没有它的最新值，重算会把同步结果覆盖成陈旧值。
 	s.InvalidateOpenAICodexClientVersionCache()
 	s.InvalidateOpenAICodexTicketEnabledCache()
+	s.InvalidateOpenAICodexTicketAccountTypesCache()
 	s.InvalidateOpenAICodexTicketHarvestProxyCache()
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{

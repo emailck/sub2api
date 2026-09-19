@@ -889,6 +889,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else if s != nil && s.cfg != nil {
 		result.OpenAICodexTicketEnabled = s.cfg.Gateway.OpenAICodexTicket.Enabled
 	}
+	result.OpenAICodexTicketAccountTypes, _ = parseOpenAICodexTicketAccountTypes(settings[SettingKeyOpenAICodexTicketAccountTypes])
+	if result.OpenAICodexTicketAccountTypes == nil {
+		result.OpenAICodexTicketAccountTypes = DefaultOpenAICodexTicketAccountTypes()
+	}
 	result.OpenAICodexTicketHarvestProxyURL = strings.TrimSpace(settings[SettingKeyOpenAICodexTicketHarvestProxyURL])
 	// codex_cli_only 加固
 	result.MinCodexVersion = settings[SettingKeyMinCodexVersion]

@@ -34,3 +34,26 @@ func TestAccountResponseCodexTicketsReadsLiveSettingsAfterRestart(t *testing.T) 
 	settings.InvalidateOpenAICodexTicketEnabledCache()
 	require.Empty(t, h.accountResponseFromService(account).CodexTurnTickets)
 }
+
+func TestAccountResponseCodexTicketsHideUnselectedPlan(t *testing.T) {
+	cfg := &config.Config{}
+	repo := &settingHandlerRepoStub{values: map[string]string{
+		service.SettingKeyOpenAICodexTicketEnabled:      "true",
+		service.SettingKeyOpenAICodexTicketAccountTypes: `["plus"]`,
+	}}
+	settings := service.NewSettingService(repo, cfg)
+	h := &AccountHandler{cfg: cfg}
+	h.SetCodexTicketSettings(settings)
+	account := &service.Account{ID: 41, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Credentials: map[string]any{"plan_type": "self_serve_business_prolite"}}
+	require.Empty(t, h.accountResponseFromService(account).CodexTurnTickets)
+	require.Empty(t, h.accountListResponseFromService(account).CodexTurnTickets)
+	repo.values[service.SettingKeyOpenAICodexTicketAccountTypes] = `["self_serve_business_prolite"]`
+	settings.InvalidateOpenAICodexTicketAccountTypesCache()
+	tickets := h.accountResponseFromService(account).CodexTurnTickets
+	require.Len(t, tickets, 2)
+	require.Equal(t, 332, tickets[0].TargetLength)
+	repo.values[service.SettingKeyOpenAICodexTicketAccountTypes] = `[]`
+	settings.InvalidateOpenAICodexTicketAccountTypesCache()
+	require.Empty(t, h.accountResponseFromService(account).CodexTurnTickets)
+}

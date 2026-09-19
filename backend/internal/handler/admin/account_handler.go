@@ -367,6 +367,10 @@ func (h *AccountHandler) enrichCodexTicketStatus(account *service.Account, out *
 		cfg := h.cfg.Gateway.OpenAICodexTicket
 		if h.codexTicketSettings != nil {
 			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(context.Background(), cfg.Enabled)
+			if !service.OpenAICodexTicketAccountTypeSelected(account, h.codexTicketSettings.GetOpenAICodexTicketAccountTypes(context.Background())) {
+				out.CodexTurnTickets = nil
+				return
+			}
 		}
 		out.CodexTurnTickets = service.OpenAICodexTicketStatuses(account, cfg, time.Now())
 	}

@@ -735,6 +735,49 @@ describe("admin SettingsView payment visible method controls", () => {
     wrapper.unmount();
   });
 
+  it("loads and submits the selected Codex ticket plans", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse,
+      openai_codex_ticket_enabled: true,
+      openai_codex_ticket_account_types: ["self_serve_business_prolite"],
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get<HTMLInputElement>("#codex-ticket-type-self_serve_business_prolite").element.checked).toBe(true);
+    expect(wrapper.get<HTMLInputElement>("#codex-ticket-type-self_serve_business_usage_based").element.checked).toBe(false);
+    await wrapper.get("#codex-ticket-type-team").setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0].openai_codex_ticket_account_types).toEqual(["self_serve_business_prolite", "team"]);
+    expect(updateSettings.mock.calls[0]?.[0].openai_codex_ticket_enabled).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("defaults old settings to all plans and can save no ticket plans", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const checkboxes = () => wrapper.findAll<HTMLInputElement>('input[id^="codex-ticket-type-"]');
+    expect(checkboxes()).toHaveLength(11);
+    expect(checkboxes().every(input => input.element.checked)).toBe(true);
+    await wrapper.get("#codex-ticket-types-none").trigger("click");
+    expect(checkboxes().every(input => !input.element.checked)).toBe(true);
+    await wrapper.get("#codex-ticket-types-all").trigger("click");
+    expect(checkboxes().every(input => input.element.checked)).toBe(true);
+    await wrapper.get("#codex-ticket-types-none").trigger("click");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0].openai_codex_ticket_account_types).toEqual([]);
+    wrapper.unmount();
+  });
+
+  it("keeps an explicitly empty ticket plan selection when loading", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, openai_codex_ticket_enabled: true, openai_codex_ticket_account_types: [] });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.findAll<HTMLInputElement>('input[id^="codex-ticket-type-"]').every(input => !input.element.checked)).toBe(true);
+    expect(wrapper.text()).toContain("admin.settings.gatewayForwarding.codexTicketNoTypes");
+    wrapper.unmount();
+  });
+
   it("loads the masked Codex harvest proxy and submits a replacement URL", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,

@@ -4515,6 +4515,37 @@
                     v-model="form.openai_codex_ticket_enabled"
                   />
                 </div>
+                <fieldset class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+                  <legend class="px-1 text-sm font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.settings.gatewayForwarding.codexTicketAccountTypes") }}
+                  </legend>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexTicketAccountTypesDesc") }}
+                  </p>
+                  <div class="mt-2 flex gap-3 text-sm">
+                    <button id="codex-ticket-types-all" type="button" class="text-primary-600 hover:underline" @click="form.openai_codex_ticket_account_types = [...codexTicketAccountTypes]">
+                      {{ t("admin.settings.gatewayForwarding.codexTicketSelectAll") }}
+                    </button>
+                    <button id="codex-ticket-types-none" type="button" class="text-primary-600 hover:underline" @click="form.openai_codex_ticket_account_types = []">
+                      {{ t("admin.settings.gatewayForwarding.codexTicketSelectNone") }}
+                    </button>
+                  </div>
+                  <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label v-for="accountType in codexTicketAccountTypes" :key="accountType" class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <input
+                        :id="`codex-ticket-type-${accountType}`"
+                        v-model="form.openai_codex_ticket_account_types"
+                        type="checkbox"
+                        :value="accountType"
+                        class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>{{ t(`admin.settings.gatewayForwarding.codexTicketTypeLabels.${accountType}`) }}</span>
+                    </label>
+                  </div>
+                  <p v-if="form.openai_codex_ticket_enabled && form.openai_codex_ticket_account_types.length === 0" class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexTicketNoTypes") }}
+                  </p>
+                </fieldset>
                 <div>
                   <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                     {{ t("admin.settings.gatewayForwarding.codexTicketHarvestProxy") }}
@@ -9561,6 +9592,12 @@ type SettingsForm = Omit<
 
 const schedulingThresholdPlatforms = SCHEDULING_THRESHOLD_PLATFORMS;
 
+const codexTicketAccountTypes = [
+  "free", "plus", "pro", "prolite", "team", "business",
+  "self_serve_business_prolite", "self_serve_business_usage_based",
+  "enterprise", "edu", "other",
+];
+
 const form = reactive<SettingsForm>({
   registration_enabled: true,
   email_verify_enabled: false,
@@ -9814,6 +9851,7 @@ const form = reactive<SettingsForm>({
   openai_codex_client_version_synced: "",
   openai_codex_version_auto_sync_enabled: true,
   openai_codex_ticket_enabled: false,
+  openai_codex_ticket_account_types: [...codexTicketAccountTypes],
   openai_codex_ticket_harvest_proxy_url: "",
   openai_codex_ticket_harvest_proxy_configured: false,
   // codex_cli_only 加固
@@ -11399,6 +11437,7 @@ async function saveSettings() {
       openai_codex_version_auto_sync_enabled:
         form.openai_codex_version_auto_sync_enabled,
       openai_codex_ticket_enabled: form.openai_codex_ticket_enabled,
+      openai_codex_ticket_account_types: [...form.openai_codex_ticket_account_types],
       openai_codex_ticket_harvest_proxy_url:
         form.openai_codex_ticket_harvest_proxy_url?.trim() || "",
       min_codex_version: form.min_codex_version?.trim() || "",

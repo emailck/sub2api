@@ -46,3 +46,30 @@ func TestSettingsCodexTicketRejectInvalidProxyWithoutLeakingPassword(t *testing.
 	require.NotContains(t, rec.Body.String(), "invalid-secret")
 	require.Equal(t, "http://previous.example.com:8080", repo.values[key])
 }
+
+func TestSettingsCodexTicketAccountTypesSaveEmptyAndPreserveOmitted(t *testing.T) {
+	key := service.SettingKeyOpenAICodexTicketAccountTypes
+	h, repo := newStepUpSwitchTestHandler(t, nil)
+	ctx := context.Background()
+	require.Equal(t, service.DefaultOpenAICodexTicketAccountTypes(), h.settingService.GetOpenAICodexTicketAccountTypes(ctx))
+	for _, selected := range [][]string{{"team", "self_serve_business_prolite"}, {}} {
+		rec := doUpdateSettings(t, h, map[string]any{key: selected}, nil)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, selected, h.settingService.GetOpenAICodexTicketAccountTypes(ctx))
+		stored := repo.values[key]
+		for _, body := range []map[string]any{{"site_name": "changed"}, {key: nil}} {
+			rec = doUpdateSettings(t, h, body, nil)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Equal(t, stored, repo.values[key])
+		}
+	}
+	require.Equal(t, "[]", repo.values[key])
+	get := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(get)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	h.GetSettings(c)
+	require.Contains(t, get.Body.String(), `"openai_codex_ticket_account_types":[]`)
+	rec := doUpdateSettings(t, h, map[string]any{key: []string{"not-a-plan"}}, nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "[]", repo.values[key])
+}
