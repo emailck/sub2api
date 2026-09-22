@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -80,6 +81,7 @@ type openAIWSAcquireRequest struct {
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
+	ticketBundle        [32]byte
 	betaFeatures        string
 	codexInstallationID string
 	sessionIDHyphen     string
@@ -1821,7 +1823,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
-	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, headers)
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
 	return pooledConn, nil
 }
@@ -2035,6 +2037,11 @@ func normalizeOpenAIWSBetaFeatures(headers http.Header) string {
 func normalizeOpenAIWSHandshakeCompatibility(account *Account, headers http.Header) openAIWSHandshakeCompatibilityKey {
 	key := openAIWSHandshakeCompatibilityKey{
 		betaFeatures: normalizeOpenAIWSBetaFeatures(headers),
+	}
+	// Cookies and turn-state are handshake headers: a refreshed bundle must not
+	// silently reuse a connection established with the previous bundle.
+	if cookie := headers.Get("Cookie"); cookie != "" && headers.Get(openAICodexTurnStateHeader) != "" {
+		key.ticketBundle = sha256.Sum256([]byte(headers.Get(openAICodexTurnStateHeader) + "\x00" + cookie))
 	}
 	mode := activeCodexFingerprintMode(account)
 	if mode == codexFingerprintOff {

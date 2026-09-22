@@ -121,7 +121,7 @@ func TestOpenAICodexTeamTicketRefreshAndPlanChange(t *testing.T) {
 	svc.refreshOpenAICodexTickets(context.Background())
 	require.Equal(t, 1, calls, "a fresh 332 ticket must not be harvested again")
 	ticket := svc.lookupOpenAICodexTicket(account, "gpt-6-astra")
-	ticket.ExpiresAt = time.Now().Add(5 * time.Minute)
+	ticket.ExpiresAt = time.Now().Add(10 * time.Second)
 	svc.refreshOpenAICodexTickets(context.Background())
 	require.Equal(t, 2, calls, "a near-expiry Team ticket must refresh")
 	ticket = svc.lookupOpenAICodexTicket(account, "gpt-6-astra")

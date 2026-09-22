@@ -332,8 +332,11 @@ gateway:
     # Env: GATEWAY_OPENAI_CODEX_TICKET_TEAM_TARGET_LENGTH=332
     target_length: 292
     team_target_length: 332
-    ttl_seconds: 3600
-    refresh_before_seconds: 600
+    # Store the state and all three response cookies as one account/model bundle.
+    # Expire after 240s; begin refreshing at age 220s. Old 3600/600 settings
+    # are normalized to these bounds by the gateway.
+    ttl_seconds: 240
+    refresh_before_seconds: 20
     # 后台「系统设置 → 网关 → Codex 设置」可覆盖此值，无需重启。
     # 后台值的读取缓存为 5 秒，下个探测周期使用新代理；代理服务商自行负责轮换 IP。
     harvest_proxy_url: ""

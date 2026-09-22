@@ -30,12 +30,13 @@ func TestCodexTicketEnabledRuntimeSettingOverridesYaml(t *testing.T) {
 	svc.settingService = settings
 	account := ticketTestAccount(41)
 	svc.storeOpenAICodexTicket(context.Background(), account, &openAICodexTicket{
+		Cookies:    ticketTestCookies(),
 		AccountID:  41,
 		Model:      "gpt-6-astra",
 		State:      fakeCodexTicketState(292),
 		Length:     292,
 		CapturedAt: time.Now(),
-		ExpiresAt:  time.Now().Add(time.Hour),
+		ExpiresAt:  time.Now().Add(240 * time.Second),
 	})
 
 	h := http.Header{}
