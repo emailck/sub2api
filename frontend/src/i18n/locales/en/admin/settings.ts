@@ -527,7 +527,7 @@ export default {
         codexHardeningTitle: "Codex Settings",
         codexTicketEnabled: "Codex ticket harvest",
         codexTicketEnabledDesc:
-          "When off, the gateway neither harvests nor injects x-codex-turn-state and forwards traffic as usual. When on, it harvests tickets in the background and overwrites that header on production requests. Default target lengths are 292 for personal plans and 332 for Team/Business (including self_serve_business_prolite). Fail-closed applies to both.",
+          "When off, the gateway neither harvests nor injects x-codex-turn-state and forwards traffic as usual. When on, it harvests tickets in the background and overwrites that header on production requests. Default target lengths are 292 for personal plans and 780 for Team/Business (including self_serve_business_prolite). Fail-closed is optional; when disabled, ticket failures remain visible but do not block requests.",
         codexTicketAccountTypes: "Subscription plans to harvest",
         codexTicketAccountTypesDesc: "Only selected plans harvest and inject tickets, with missing-ticket blocking when configured. Unselected plans forward normally. Changes apply after saving, within about 5 seconds across instances; an in-flight probe may finish its current request.",
         codexTicketSelectAll: "Select all",

@@ -31,7 +31,7 @@ const (
 )
 
 // ErrOpenAICodexTicketUnavailable 表示该号该模型没有符合账号套餐策略的有效门票，
-// 且 fail_closed 禁止裸打业务请求。
+// 且 fail_closed 配置为 true 时禁止裸打业务请求。
 var ErrOpenAICodexTicketUnavailable = errors.New("codex turn-state ticket unavailable")
 
 type openAICodexTicket struct {
@@ -70,7 +70,7 @@ func (s *OpenAIGatewayService) openAICodexTicketConfig() config.OpenAICodexTicke
 		cfg.TargetLength = 292
 	}
 	if cfg.TeamTargetLength <= 0 {
-		cfg.TeamTargetLength = 332
+		cfg.TeamTargetLength = 780
 	}
 	if cfg.TTLSeconds <= 0 || cfg.TTLSeconds > openAICodexTicketMaxTTLSeconds {
 		cfg.TTLSeconds = openAICodexTicketDefaultTTLSeconds
