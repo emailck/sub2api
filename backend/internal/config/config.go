@@ -2395,7 +2395,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
 	viper.SetDefault("gateway.openai_codex_ticket.enabled", false)
 	viper.SetDefault("gateway.openai_codex_ticket.target_length", 292)
-	viper.SetDefault("gateway.openai_codex_ticket.team_target_length", 332)
+	viper.SetDefault("gateway.openai_codex_ticket.team_target_length", 780)
 	viper.SetDefault("gateway.openai_codex_ticket.ttl_seconds", 240)
 	viper.SetDefault("gateway.openai_codex_ticket.refresh_before_seconds", 20)
 	viper.SetDefault("gateway.openai_codex_ticket.harvest_proxy_url", "")

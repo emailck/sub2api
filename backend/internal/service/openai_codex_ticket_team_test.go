@@ -16,12 +16,12 @@ func TestOpenAICodexTicketPlanPolicyEndToEnd(t *testing.T) {
 		name, plan                       string
 		personalTarget, teamTarget, want int
 	}{
-		{name: "team", plan: "team", want: 332},
-		{name: "business", plan: "business", want: 332},
-		{name: "business prolite", plan: "self_serve_business_prolite", want: 332},
-		{name: "business usage based", plan: "self_serve_business_usage_based", want: 332},
-		{name: "normalized team", plan: " Team ", want: 332},
-		{name: "normalized prolite", plan: " SELF_SERVE_BUSINESS_PROLITE ", want: 332},
+		{name: "team", plan: "team", want: 780},
+		{name: "business", plan: "business", want: 780},
+		{name: "business prolite", plan: "self_serve_business_prolite", want: 780},
+		{name: "business usage based", plan: "self_serve_business_usage_based", want: 780},
+		{name: "normalized team", plan: " Team ", want: 780},
+		{name: "normalized prolite", plan: " SELF_SERVE_BUSINESS_PROLITE ", want: 780},
 		{name: "plus", plan: "plus", want: 292},
 		{name: "personal prolite", plan: "prolite", want: 292},
 		{name: "unknown", want: 292},
@@ -81,7 +81,7 @@ func TestOpenAICodexTeamTicketRejectsWrongLengthAndFailedResponses(t *testing.T)
 		{"312 length", fakeCodexTicketState(312), 200},
 		{"356 length", fakeCodexTicketState(356), 200},
 		{"invalid prefix", strings.Repeat("X", 332), 200},
-		{"unauthorized", fakeCodexTicketState(332), 401},
+		{"unauthorized", fakeCodexTicketState(780), 401},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			account := ticketTestAccount(41)
@@ -105,7 +105,7 @@ func TestOpenAICodexTeamTicketRefreshAndPlanChange(t *testing.T) {
 	account.Status = StatusActive
 	account.Credentials["plan_type"] = "self_serve_business_prolite"
 	repo := &codexTicketRefreshRepo{accounts: []Account{*account}}
-	calls, length := 0, 332
+	calls, length := 0, 780
 	upstream := &codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
 		calls++
 		resp := codexTicketResponse()
@@ -119,7 +119,7 @@ func TestOpenAICodexTeamTicketRefreshAndPlanChange(t *testing.T) {
 	require.Equal(t, 1, calls)
 	require.False(t, svc.openAICodexTicketBlocksAccount(account, "gpt-6-astra"))
 	svc.refreshOpenAICodexTickets(context.Background())
-	require.Equal(t, 1, calls, "a fresh 332 ticket must not be harvested again")
+	require.Equal(t, 1, calls, "a fresh 780 ticket must not be harvested again")
 	ticket := svc.lookupOpenAICodexTicket(account, "gpt-6-astra")
 	ticket.ExpiresAt = time.Now().Add(10 * time.Second)
 	svc.refreshOpenAICodexTickets(context.Background())

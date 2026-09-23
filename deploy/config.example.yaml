@@ -329,9 +329,9 @@ gateway:
     # self_serve_business_prolite / self_serve_business_usage_based, use
     # team_target_length. Both personal and Team remain fail-closed.
     # These are configurable empirical targets, not upstream validity guarantees.
-    # Env: GATEWAY_OPENAI_CODEX_TICKET_TEAM_TARGET_LENGTH=332
+    # Env: GATEWAY_OPENAI_CODEX_TICKET_TEAM_TARGET_LENGTH=780
     target_length: 292
-    team_target_length: 332
+    team_target_length: 780
     # Store the state and all three response cookies as one account/model bundle.
     # Expire after 240s; begin refreshing at age 220s. Old 3600/600 settings
     # are normalized to these bounds by the gateway.

@@ -100,7 +100,7 @@ func openAICodexTicketTargetLength(account *Account, cfg config.OpenAICodexTicke
 			if cfg.TeamTargetLength > 0 {
 				return cfg.TeamTargetLength
 			}
-			return 332
+			return 780
 		}
 	}
 	if cfg.TargetLength > 0 {

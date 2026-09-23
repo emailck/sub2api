@@ -77,7 +77,7 @@ func TestCodexTicketAccountTypeScopeControlsHarvestGateAndInjection(t *testing.T
 	settings := NewSettingService(settingsRepo, &config.Config{})
 	upstream := &codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
 		resp := codexTicketResponse()
-		resp.Header.Set(openAICodexTurnStateHeader, fakeCodexTicketState(332))
+		resp.Header.Set(openAICodexTurnStateHeader, fakeCodexTicketState(780))
 		return resp, nil
 	}}
 	calls := 0
@@ -106,7 +106,7 @@ func TestCodexTicketAccountTypeScopeControlsHarvestGateAndInjection(t *testing.T
 	svc.refreshOpenAICodexTickets(ctx)
 	require.Equal(t, 1, calls)
 	require.NoError(t, svc.applyOpenAICodexTicket(ctx, account, "gpt-6-astra", h))
-	require.Len(t, h.Get(openAICodexTurnStateHeader), 332)
+	require.Len(t, h.Get(openAICodexTurnStateHeader), 780)
 
 	settingsRepo.values[key] = `[]`
 	settings.InvalidateOpenAICodexTicketAccountTypesCache()
